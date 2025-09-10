@@ -1,0 +1,14 @@
+# Stata artifacts
+*.log
+*.smcl
+*.stpr
+
+# Binary data (don’t commit datasets)
+*.dta
+
+# Keep raw data out of Git
+data/raw/
+
+# OS junk
+.DS_Store
+Thumbs.db
