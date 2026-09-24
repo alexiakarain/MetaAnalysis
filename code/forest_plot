@@ -98,7 +98,7 @@ plot_df <- bind_rows(lapply(names(meta_results), function(o) {
 ### Combined forest plot: one row each for Wales / Scotland / Pooled ###
 ########################################################################
 
-row_levels <- c("Wales", "Scotland", "Pooled estimate")   # top to bottom
+row_levels <- c("Wales", "Scotland", "Pooled estimate")   # I had two different studies so I categorized by Country, instead it can be by study number
 n_out      <- nlevels(plot_df$outcome)
 spacing    <- 0.13   # vertical gap between outcomes within a row
 
