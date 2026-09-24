@@ -1,0 +1,158 @@
+## Code written by: Alexia Karain
+## Date: 24/09/2026
+
+########################################################################
+####  Creating a Forest Plot with Multiple Outcomes ####
+########################################################################
+
+# install.packages(c("readxl", "dplyr", "metafor", "ggplot2"))  # run once only
+
+library(readxl)
+library(dplyr)
+library(metafor)
+library(ggplot2)
+
+########################################################################
+### Data ###
+########################################################################
+
+df <- read_excel("C:/location/of/excel_file.xlsx")
+
+# Outcome codes -> display labels (this order is the order in the plot)
+outcome_labels <- c(
+  any_hosp    = "Any-cause hospitalisation",
+  congen      = "Congenital anomalies",
+  neuro       = "Neurological disorders",
+  epilepsy    = "Epilepsy-related disorders",
+  other_neuro = "Other neurological disorders",
+  psych       = "Psychiatric disorders"
+)
+
+df <- df %>%
+  mutate(
+    log_ES = log(effect_size),
+    logSE  = (log(upper_CI) - log(lower_CI)) / (2 * qnorm(0.975))
+  ) %>%
+  filter(is.finite(log_ES), is.finite(logSE),
+         Outcome %in% names(outcome_labels)) %>%
+  mutate(
+    outcome = factor(Outcome, levels = names(outcome_labels),
+                     labels = outcome_labels),
+    Country = factor(Country, levels = c("Wales", "Scotland"))
+  )
+
+########################################################################
+### Meta-analysis: one REML random-effects model per outcome ###
+########################################################################
+
+meta_results <- lapply(split(df, df$outcome, drop = TRUE), function(d) {
+  rma(yi = log_ES, sei = logSE, data = d,
+      method = "REML", slab = as.character(Country))
+})
+
+# Print all model summaries
+for (o in names(meta_results)) {
+  cat("\n==========", o, "==========\n")
+  print(meta_results[[o]])
+  print(round(weights(meta_results[[o]]), 1))   # % weight per study
+}
+
+########################################################################
+### Build one data frame for plotting ####
+########################################################################
+
+z <- qnorm(0.975)
+
+plot_df <- bind_rows(lapply(names(meta_results), function(o) {
+  r  <- meta_results[[o]]
+  yi <- as.numeric(r$yi)
+  bind_rows(
+    data.frame(outcome = o,
+               label   = as.character(r$slab),
+               hr      = exp(yi),
+               lci     = exp(yi - z * sqrt(r$vi)),
+               uci     = exp(yi + z * sqrt(r$vi)),
+               type    = "Study",
+               i2      = NA_real_,
+               wt      = as.numeric(weights(r))),   # % weight within outcome
+    data.frame(outcome = o,
+               label   = "Pooled estimate",
+               hr      = exp(as.numeric(r$b)),
+               lci     = exp(r$ci.lb),
+               uci     = exp(r$ci.ub),
+               type    = "Pooled",
+               i2      = r$I2,
+               wt      = 100)
+  )
+})) %>%
+  mutate(
+    outcome = factor(outcome, levels = outcome_labels[outcome_labels %in% outcome]),
+    # Wales at top, then Scotland, then pooled row at the bottom of each block
+    label   = factor(label, levels = c("Pooled estimate", "Scotland", "Wales")),
+    ci_txt  = ifelse(type == "Pooled",
+                     sprintf("%.2f (%.2f-%.2f)  I\u00b2=%.0f%%", hr, lci, uci, i2),
+                     sprintf("%.2f (%.2f-%.2f)  wt %.1f%%", hr, lci, uci, wt))
+  )
+
+########################################################################
+### Combined forest plot: one row each for Wales / Scotland / Pooled ###
+########################################################################
+
+row_levels <- c("Wales", "Scotland", "Pooled estimate")   # top to bottom
+n_out      <- nlevels(plot_df$outcome)
+spacing    <- 0.13   # vertical gap between outcomes within a row
+
+# Numeric y positions: each row is centred on 3 / 2 / 1, and the outcomes
+# are spread above and below that centre (first outcome at the top)
+plot_df <- plot_df %>%
+  mutate(
+    row_y = match(as.character(label), rev(row_levels)),
+    y     = row_y + ((n_out + 1) / 2 - as.integer(outcome)) * spacing
+  )
+
+# Colour-blind-friendly palette, one colour per outcome
+outcome_cols <- setNames(
+  c("#440154", "#414487", "#2A788E", "#22A884", "#7AD151", "#FDE725"),
+  outcome_labels
+)
+
+p <- ggplot(plot_df, aes(x = hr, y = y, colour = outcome)) +
+  # light shading behind the pooled row, thin lines between rows
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.5, ymax = 1.5,
+           fill = "grey94") +
+  geom_hline(yintercept = c(1.5, 2.5), colour = "grey80") +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey40") +
+  geom_errorbar(aes(xmin = lci, xmax = uci), orientation = "y",
+                width = spacing * 0.5, linewidth = 0.7, show.legend = FALSE) +
+  # study squares sized by their random-effects weight; pooled = diamond
+  geom_point(data = ~ subset(.x, type == "Study"),  aes(size = wt), shape = 15) +
+  geom_point(data = ~ subset(.x, type == "Pooled"), shape = 18, size = 5) +
+  # HR (95% CI) text to the right, coloured to match its outcome
+  geom_text(aes(x = Inf, label = ci_txt), hjust = -0.08,
+            size = 3, show.legend = FALSE) +
+  scale_colour_manual(values = outcome_cols, name = NULL) +
+  scale_size_continuous(range = c(1.2, 4.5), limits = c(0, 100), guide = "none") +
+  scale_x_log10(breaks = c(0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3)) +
+  scale_y_continuous(breaks = 1:3, labels = rev(row_levels),
+                     limits = c(0.5, 3.5), expand = c(0, 0)) +
+  guides(colour = guide_legend(nrow = 2,
+                               override.aes = list(shape = 15, size = 4))) +
+  coord_cartesian(clip = "off") +
+  labs(x = "Hazard ratio (log scale)", y = NULL,
+       title = "REML random-effects meta-analysis by outcome") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor    = element_blank(),
+    panel.grid.major.y  = element_blank(),
+    axis.text.y         = element_text(face = "bold", size = 12, colour = "black"),
+    legend.position     = "bottom",
+    legend.text         = element_text(size = 10),
+    plot.title          = element_text(face = "bold"),
+    plot.title.position = "plot",
+    plot.margin         = margin(10, 190, 10, 10)   # room for the CI text
+  )
+
+print(p)
+
+ggsave("forest_all_outcomes.png", p,
+       width = 10, height = 7.5, dpi = 300, bg = "white")
